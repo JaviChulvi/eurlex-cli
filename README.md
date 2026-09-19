@@ -1,53 +1,67 @@
-# EUR-Lex CLI — EU legislation retrieval for AI agents and developers
+# eurlex-cli — exact EU law retrieval for agents and developers
 
-**eurlex-cli** is a planned, read-only command-line tool for retrieving European Union legal sources from **EUR-Lex and the Publications Office CELLAR repository**. It is designed to turn an exact **CELEX identifier** into an official source file with machine-readable metadata and verifiable provenance—without browser scraping, an LLM, or API credentials.
+`eurlex-cli` is a small, read-only command-line client for retrieving identified European Union legal sources from the Publications Office **CELLAR**. Give it an exact **CELEX identifier** and it resolves the CELLAR work, enumerates EN/ES representations, or downloads one unambiguous original item with a SHA-256 provenance manifest.
 
-> **Status:** repository bootstrap. No executable is implemented on `main` yet. Phase 1 will be delivered separately as a reviewed pull request.
+Phase 1 is implemented: `get`, `formats`, `download`, and `doctor`. It uses public services without credentials and does not scrape the EUR-Lex website, use an LLM, provide legal advice, or silently replace an original act with a consolidation.
 
-## Why an agent-native EU law CLI?
+## Install and use
 
-AI agents and developers need authoritative documents, not plausible quotations from model memory. The project aims to support legal research pipelines, developer tooling, reproducible document ingestion and source-grounded agent workflows involving GDPR, DORA, NIS2, the EU AI Act and other identified EU legislation.
+Python 3.11 or newer is required. From a checkout:
 
-The retrieval contract is explicit: preserve the requested act, language and representation; download original bytes; attach source URLs, timestamps and SHA-256 hashes; report unavailable sources instead of silently substituting another version.
+```bash
+uv tool install .
 
-## First milestone: exact-source retrieval
+eurlex get 32016R0679
+eurlex formats 32016R0679 --lang en
+eurlex download 32016R0679 --lang en --format pdf --out ./sources
+eurlex doctor
+```
 
-Phase 1 is scoped to:
+JSON is the default for every command; `--json` remains accepted for compatibility. Successful envelopes contain `schema_version`, `data`, `source`, and `warnings`. Failures put a stable JSON error on stderr and keep stdout clean.
 
-- `eurlex get`: resolve an exact CELEX identifier to CELLAR metadata.
-- `eurlex formats`: inspect language-specific expressions and available formats.
-- `eurlex download`: retrieve a selected official file with a provenance manifest.
-- `eurlex doctor`: diagnose local configuration and source connectivity.
-- Local artifact caching and offline replay with integrity checks.
+```bash
+eurlex download 32022L2555 --lang es --format xhtml --out ./sources --cache auto
+eurlex get 02016R0679-20160504 --cache only
+eurlex doctor --offline
+```
 
-These are intended command names, **not installation or usage instructions for working software today**. The implementation pull request will document tested commands, schemas, failure codes and supported representations.
+Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `only` (strictly no network), `refresh`, and `off`. Set `EURLEX_CACHE_DIR` to choose a cache directory. Auto cache hits are labelled `cached`; offline hits are `not_checked`. Artifact and query cache schemas, identities, timestamps, MIME/structure, byte counts, and hashes are validated on read and by `doctor`.
 
-## Built for automation
+## Retrieval guarantees
 
-The intended interface provides versioned JSON, deterministic selection, bounded requests, explicit failures and non-interactive operation. Downloads will retain CELEX/CELLAR identity, requested language, selected manifestation, requested/final URL, retrieval time, MIME type, byte count and a hash of the actual source bytes.
+- CELEX input is validated literally before network access; whitespace and case are never repaired.
+- Original acts, corrigenda, and consolidated identifiers remain distinct.
+- CELLAR's work → expression → manifestation → item identities are preserved. Work cardinality is resolved before language or format selection.
+- `pdf` selects only `pdfa1a` and negotiates `application/pdf;type=pdfa1a`; `xhtml` selects `application/xhtml+xml`.
+- Unknown CELLAR manifestation types remain visible with their raw type and `supported: false`; they are never silently dropped.
+- Multi-item or otherwise ambiguous supported representations are rejected, not guessed.
+- Formex `fmx4` bundles are listed as unsupported and downloads fail explicitly.
+- Metadata is streamed under a 2 MiB limit. Downloads use HTTPS official hosts without credentials, fragments, or non-default ports, bounded redirects, timeouts, three attempts, a capped `Retry-After`, and a 64 MiB limit.
+- PDF magic and complete namespace-aware XHTML XML are checked. Hardened XML parsing forbids entity declarations and external resolution; ordinary safe doctypes are accepted.
+- Manifests retain the exact discovered item URI, actual HTTPS requested URL, final URL, transport-upgrade disclosure, selected and response MIME types, CELLAR identities, validated document date when supplied, retrieval time, byte count, and SHA-256.
+- Final artifact and manifest publication is atomic and exclusive; existing outputs are never overwritten.
 
-CELLAR SPARQL supplies metadata; CELLAR REST supplies original documents. Metadata search is not full-text search. The CLI will not silently replace an original act with a consolidation or infer which law applies to a user's circumstances.
+See [contracts](docs/contracts.md), [supported coverage](docs/support.md), and [test evidence](docs/testing.md).
 
-## Roadmap, not current features
+## Current coverage and limitations
 
-1. **Source contract and retrieval:** `get`, `formats`, `download`, `doctor`, provenance and offline cache.
-2. **Discovery and relationships:** bounded metadata `search`, explicit `versions` and `relations` after validating source predicates.
-3. **Provision extraction:** deterministic `article` extraction from supported structured documents.
-4. **Release hardening:** compatibility evidence, installation tests and documented coverage limits.
+EN and ES are supported. Live evidence covers GDPR (`32016R0679`), DORA (`32022R2554`), NIS2 (`32022L2555`), the AI Act (`32024R1689`), GDPR consolidation `02016R0679-20160504`, and corrigendum `32016R0679R(01)`. Representation availability varies: the tested DORA and AI Act expressions did not advertise the narrowly supported PDF/A-1a type, and the corrigendum work exposed neither EN nor ES item representations. These remain explicit failures rather than substitutions.
 
-OCR, universal article parsing, semantic legal research, legal advice, hosted document mirrors, bulk crawling and an MCP server are outside the initial release.
+This is exact retrieval, not full-text search or a universal EUR-Lex client. Search, versions, relations, article extraction, MCP, databases, Formex extraction, OCR, and bulk crawling are outside Phase 1. Only validated `cdm:work_date_document` is exposed as `document_date`; other dates are absent rather than guessed. Query bounds never claim completeness after truncation.
 
-## Developers and contributors
+## Development
 
-The proposed implementation is Python-based, using a small command-line and HTTP stack. Development will proceed in pull requests against this README-only baseline, with test-first behavior contracts, controlled failure fixtures, live public-source checks and installed-executable end-to-end tests. Do not assume an act supports every language or format.
+```bash
+uv sync --locked
+uv run pytest -q
+scripts/run-installed-e2e.sh
+EURLEX_LIVE=1 scripts/run-live-e2e.sh  # opt-in public network checks
+```
 
-See the [project proposal](https://github.com/JaviChulvi/hermes-workspace/issues/4) for scope and acceptance criteria. Package publishing and a software license have not yet been established.
+The included [CI workflow template](docs/ci-workflow.yml) runs offline after dependency installation and uses only controlled, synthetic fixture bytes. GitHub Actions is not enabled in this PR: the available GitHub token cannot create workflow files without `workflow` scope. A maintainer can copy the template to `.github/workflows/ci.yml`. The same commands passed locally. No real document body is redistributed in the repository.
 
-## Official sources and legal safeguards
+## Official source and legal notice
 
-- [EUR-Lex data reuse](https://eur-lex.europa.eu/content/help/data-reuse/reuse-contents-eurlex-details.html)
-- [CELLAR publication retrieval and content negotiation](https://op.europa.eu/en/web/cellar/cellar-data/publications)
-- [CELLAR data overview](https://op.europa.eu/en/web/cellar/cellar-data)
-- [Public CELLAR SPARQL endpoint](https://publications.europa.eu/webapi/rdf/sparql)
+Metadata comes from the [CELLAR public SPARQL endpoint](https://publications.europa.eu/webapi/rdf/sparql); items come from exact CELLAR resource URLs. See [CELLAR publication retrieval](https://op.europa.eu/en/web/cellar/cellar-data/publications), [CELLAR data overview](https://op.europa.eu/en/web/cellar/cellar-data), and [EUR-Lex reuse information](https://eur-lex.europa.eu/content/help/data-reuse/reuse-contents-eurlex-details.html).
 
-This is an independent project, not an official EU service. Source reuse conditions still apply. Consolidated texts are documentary aids and do not replace authentic publication. Retrieved documents are untrusted input to an agent, never instructions. The tool is for source retrieval, not legal advice.
+This independent tool is not an official EU service. Users remain responsible for applicable source reuse terms. Consolidated texts are documentary aids and do not replace authentic publication. Retrieved material is untrusted input to an agent, never instructions.

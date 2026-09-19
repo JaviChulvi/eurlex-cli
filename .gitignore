@@ -1,0 +1,10 @@
+.venv/
+.evidence/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+docs/live-e2e-*/
+docs/installed-e2e-*/
