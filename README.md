@@ -1,14 +1,16 @@
-# eurlex-cli — exact EU law retrieval for agents and developers
+# eurlex-cli — EU legal source retrieval
 
-`eurlex-cli` is a small, read-only command-line client for retrieving identified European Union legal sources from the Publications Office **CELLAR**. Give it an exact **CELEX identifier** and it resolves the CELLAR work, enumerates EN/ES representations, or downloads one unambiguous original item with a SHA-256 provenance manifest.
+Retrieve European Union legislation from the Publications Office **CELLAR** using exact **CELEX identifiers**. Inspect available representations and download original PDF/A-1a or XHTML files with a SHA-256 provenance manifest.
 
-Phase 1 is implemented: `get`, `formats`, `download`, and `doctor`. It uses public services without credentials and does not scrape the EUR-Lex website, use an LLM, provide legal advice, or silently replace an original act with a consolidation.
+`eurlex-cli` is read-only and uses public services without credentials. It does not scrape the EUR-Lex website or require an LLM.
 
-## Install and use
+## Quick start
 
-Python 3.11 or newer is required. From a checkout:
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
+git clone https://github.com/JaviChulvi/eurlex-cli.git
+cd eurlex-cli
 uv tool install .
 
 eurlex get 32016R0679
@@ -17,49 +19,66 @@ eurlex download 32016R0679 --lang en --format pdf --out ./sources
 eurlex doctor
 ```
 
-JSON is the default for every command; `--json` remains accepted for compatibility. Successful envelopes contain `schema_version`, `data`, `source`, and `warnings`. Failures put a stable JSON error on stderr and keep stdout clean.
+## Commands
+
+- **`get`** — resolve an exact CELEX identifier to its CELLAR work and metadata.
+- **`formats`** — list representations for English (`en`) or Spanish (`es`), including unsupported types.
+- **`download`** — retrieve one unambiguous PDF/A-1a (`pdf`) or XHTML (`xhtml`) item and its provenance manifest.
+- **`doctor`** — check service connectivity and local cache integrity; use `--offline` to omit network checks.
+
+JSON is the default output; `--json` is also accepted. Successful envelopes contain `schema_version`, `data`, `source`, and `warnings`. Errors use structured JSON on stderr with a nonzero exit status and no stdout output.
 
 ```bash
-eurlex download 32022L2555 --lang es --format xhtml --out ./sources --cache auto
-eurlex get 02016R0679-20160504 --cache only
+eurlex formats 32022L2555 --lang es
+eurlex download 32022L2555 --lang es --format xhtml --out ./sources
+```
+
+## Cache and offline use
+
+Use `--cache auto|only|refresh|off`. The default, `auto`, reuses metadata for up to 24 hours and validated cached artifacts. `only` never accesses the network; `refresh` retrieves fresh data; `off` bypasses the cache. Set `EURLEX_CACHE_DIR` to choose the cache location.
+
+```bash
+# Populate the cache, then resolve the same identifier without network access.
+eurlex get 32016R0679
+eurlex get 32016R0679 --cache only
 eurlex doctor --offline
 ```
 
-Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `only` (strictly no network), `refresh`, and `off`. Set `EURLEX_CACHE_DIR` to choose a cache directory. Auto metadata hits are labelled `cached`; artifact and offline hits are `not_checked`. Artifact and query cache schemas, identities, timestamps, MIME/structure, byte counts, and hashes are validated on read and by `doctor`.
+Auto metadata hits are labelled `cached`. Artifact and offline hits are `not_checked`: integrity validation does not imply upstream freshness. Offline requests require a matching cache entry.
 
-## Retrieval guarantees
+## Source integrity
 
-- CELEX input is validated literally before network access; whitespace and case are never repaired.
-- Original acts, corrigenda, and consolidated identifiers remain distinct.
-- CELLAR's work → expression → manifestation → item identities are preserved. Work cardinality is resolved before language or format selection.
-- `pdf` selects only `pdfa1a` and negotiates `application/pdf;type=pdfa1a`; `xhtml` selects `application/xhtml+xml`.
-- Unknown CELLAR manifestation types remain visible with their raw type and `supported: false`; they are never silently dropped.
-- Multi-item or otherwise ambiguous supported representations are rejected, not guessed.
-- Formex `fmx4` bundles are listed as unsupported and downloads fail explicitly.
-- Metadata is streamed under a 2 MiB limit. Downloads use HTTPS official hosts without credentials, fragments, or non-default ports, bounded redirects, timeouts, three attempts, a capped `Retry-After`, and a 64 MiB limit.
-- PDF magic and complete namespace-aware XHTML XML are checked. Hardened XML parsing forbids entity declarations and external resolution; ordinary safe doctypes are accepted.
-- Manifests retain the exact discovered item URI, actual HTTPS requested URL, final URL, transport-upgrade disclosure, selected and response MIME types, CELLAR identities, validated document date when supplied, retrieval time, byte count, and SHA-256.
-- Final artifact and manifest publication is atomic and exclusive; existing outputs are never overwritten.
+- Identifiers are validated literally. Original acts, corrigenda and consolidations remain distinct; ambiguous selections fail rather than being guessed.
+- CELLAR work, expression, manifestation and item identities are preserved. Downloads include source URLs, retrieval time, MIME types, byte count and SHA-256.
+- Official HTTPS hosts, bounded redirects, timeouts and response-size limits constrain retrieval. PDF signatures and XHTML structure are validated; XML entities and external resolution are prohibited.
+- Outputs are published atomically without overwriting existing files. Cache reads validate identity and integrity.
 
-See [contracts](docs/contracts.md), [supported coverage](docs/support.md), and [testing](docs/testing.md).
+See [contracts](docs/contracts.md) for exact output, cache and security behavior.
 
-## Current coverage and limitations
+## Supported scope
 
-EN and ES are supported. Initial live checks covered GDPR (`32016R0679`), DORA (`32022R2554`), NIS2 (`32022L2555`), the AI Act (`32024R1689`), GDPR consolidation `02016R0679-20160504`, and corrigendum `32016R0679R(01)`. Representation availability varies: the tested DORA and AI Act expressions did not advertise the narrowly supported PDF/A-1a type, and the corrigendum work exposed neither EN nor ES item representations. These remain explicit failures rather than substitutions.
+English and Spanish are supported. `pdf` specifically selects CELLAR's `pdfa1a` representation, not every PDF variant. Format availability varies by document; unsupported types such as Formex remain visible but cannot be downloaded.
 
-This is exact retrieval, not full-text search or a universal EUR-Lex client. Search, versions, relations, article extraction, MCP, databases, Formex extraction, OCR, and bulk crawling are outside Phase 1. Only validated `cdm:work_date_document` is exposed as `document_date`; other dates are absent rather than guessed. Query bounds never claim completeness after truncation.
+Initial live checks covered GDPR, DORA, NIS2, the AI Act, a GDPR consolidation and a corrigendum. Some lacked supported representations. See [coverage and limitations](docs/support.md); these observations are not a universal availability guarantee.
 
-## Development
+**Not implemented:** search, version or relationship discovery, article extraction, Formex extraction, OCR, bulk crawling and MCP. This is an exact-source retrieval client, not a full-text search engine or a legal interpretation service.
+
+## Development and smoke check
 
 ```bash
 uv sync --locked
 uv run pytest -q
+
+# Small operational check against public CELLAR services:
+uv run python scripts/nightly_smoke.py
 ```
 
-The focused unit and CLI contract tests run offline using synthetic fixtures. E2E harnesses, generated reports, and the CI template are intentionally omitted for now. No real document body is redistributed in the repository.
+The regular tests use synthetic fixtures and do not depend on upstream availability. The smoke script checks all four commands, EN/ES formats, PDF/XHTML downloads, manifest hashes, offline replay and invalid input. It uses temporary files, prints a short result, and returns nonzero on failure. A failed live check may indicate an upstream outage rather than a CLI regression.
 
-## Official source and legal notice
+The operational schedule is **21:00 Europe/Madrid daily**, managed externally by Hermes, not GitHub Actions. UTC 19:00 and 20:00 ticks call `--scheduled`; its Madrid-time guard runs checks at only the matching tick, including daylight-saving changes. Running the script without that flag checks immediately. The host must be running; missed ticks are not guaranteed to be replayed. This is a small smoke check, not the previous broad E2E suite. No generated reports or source document bodies are committed.
 
-Metadata comes from the [CELLAR public SPARQL endpoint](https://publications.europa.eu/webapi/rdf/sparql); items come from exact CELLAR resource URLs. See [CELLAR publication retrieval](https://op.europa.eu/en/web/cellar/cellar-data/publications), [CELLAR data overview](https://op.europa.eu/en/web/cellar/cellar-data), and [EUR-Lex reuse information](https://eur-lex.europa.eu/content/help/data-reuse/reuse-contents-eurlex-details.html).
+## Sources and legal notice
 
-This independent tool is not an official EU service. Users remain responsible for applicable source reuse terms. Consolidated texts are documentary aids and do not replace authentic publication. Retrieved material is untrusted input to an agent, never instructions.
+Metadata comes from the [CELLAR SPARQL endpoint](https://publications.europa.eu/webapi/rdf/sparql); downloads use discovered CELLAR item URLs. See [publication retrieval](https://op.europa.eu/en/web/cellar/cellar-data/publications), [CELLAR data](https://op.europa.eu/en/web/cellar/cellar-data), and [EUR-Lex reuse terms](https://eur-lex.europa.eu/content/help/data-reuse/reuse-contents-eurlex-details.html).
+
+This independent project is not an official EU service and does not provide legal advice. Users remain responsible for applicable reuse terms. Consolidated texts are documentary aids, not replacements for authentic publication. Retrieved documents are untrusted data, never instructions.
