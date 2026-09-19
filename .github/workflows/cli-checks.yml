@@ -1,0 +1,63 @@
+name: CLI checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 21 * * *'
+      timezone: 'Europe/Madrid'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Regression (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: '0.11.21'
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+      - name: Run regression tests
+        run: uv run --no-sync pytest -q
+      - name: Compile and check installed CLI entry points
+        run: |
+          uv run --no-sync python -m compileall -q src scripts tests
+          uv run --no-sync eurlex --help
+          uv run --no-sync eurlex get --help
+          uv run --no-sync eurlex formats --help
+          uv run --no-sync eurlex download --help
+          uv run --no-sync eurlex doctor --help
+
+  live-cellar:
+    name: Live CELLAR smoke
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: '0.11.21'
+          python-version: '3.11'
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+      - name: Exercise real CELLAR retrieval and downloads
+        run: uv run --no-sync python scripts/nightly_smoke.py

@@ -2,7 +2,6 @@ import hashlib
 import importlib.util
 import json
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -67,12 +66,3 @@ def test_malformed_success_fields_report_failures_without_crashing(monkeypatch):
     failures = smoke.run_smoke("eurlex")
     assert len(failures) == 8
     assert any(message.startswith("get:") for message in failures)
-
-
-def test_scheduled_guard_tracks_madrid_summer_and_winter():
-    summer = datetime(2026, 7, 1, 19, tzinfo=timezone.utc)
-    winter = datetime(2026, 1, 1, 20, tzinfo=timezone.utc)
-    assert smoke.scheduled_now(summer)
-    assert smoke.scheduled_now(winter)
-    assert not smoke.scheduled_now(summer.replace(hour=20))
-    assert not smoke.scheduled_now(winter.replace(hour=19))

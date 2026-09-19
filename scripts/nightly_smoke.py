@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Eight-check, bounded smoke test of the installed eurlex CLI."""
 import argparse, hashlib, json, os, shutil, subprocess, tempfile, time
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 CELEX, FIELDS = "32016R0679", {"schema_version", "data", "source", "warnings"}
 class SmokeFailure(Exception): pass
 def require(condition, message):
@@ -53,8 +51,6 @@ def verify_artifact(body, language, fmt):
         valid = False
     require(valid, f"download {language} {fmt}: artifact hash/manifest invalid")
     return digest
-def scheduled_now(now=None):
-    madrid = ZoneInfo("Europe/Madrid"); return (now or datetime.now(madrid)).astimezone(madrid).hour == 21
 def run_smoke(exe):
     deadline, state, failures = time.monotonic() + 90, {}, []
     with tempfile.TemporaryDirectory(prefix="eurlex-smoke-") as temporary:
@@ -88,8 +84,7 @@ def run_smoke(exe):
         check("invalid identifier", ["get", "not-a-celex", "--json"], expected="invalid_identifier")
     return failures
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--scheduled", action="store_true"); args = parser.parse_args(argv)
-    if args.scheduled and not scheduled_now(): return 0
+    argparse.ArgumentParser(description=__doc__).parse_args(argv)
     exe = shutil.which("eurlex")
     if not exe: print("FAIL setup: eurlex executable not found\nFAIL 8/8 source_available=unknown"); return 1
     failures = run_smoke(exe)
