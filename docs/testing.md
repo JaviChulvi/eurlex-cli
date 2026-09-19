@@ -5,8 +5,8 @@ uv sync --locked
 uv run pytest -q
 ```
 
-The focused suite currently passes 70 unit, regression, and in-process CLI contract tests. HTTP responses and document bytes are synthetic; it does not depend on CELLAR uptime.
+The focused suite includes unit, regression, and in-process CLI contract tests. HTTP responses and document bytes are synthetic; it does not depend on CELLAR uptime.
 
 Coverage includes identifier validation, exact-work ambiguity, format selection, offline cache integrity and refresh, redirects, bounded streaming, PDF/XHTML validation, encoded XML entities, atomic output publication, cleanup after filesystem failures, and structured errors.
 
-The E2E harnesses, subprocess test, generated evidence files, and CI template were removed at the user's request to keep Phase 1 small. Historical live observations remain in [support.md](support.md); they are not a live validation of the current refactor. No active CI checks are configured.
+The [CLI checks workflow](../.github/workflows/cli-checks.yml) uses one Python 3.14 job to run regression tests for pull requests, pushes to `main`, nightly runs and manual runs. Nightly runs are scheduled for **21:00 Europe/Madrid daily**. Nightly and manual runs also execute `scripts/nightly_smoke.py` against public CELLAR services, checking all four commands, downloads, provenance hashes and offline replay. Historical live observations remain in [support.md](support.md).
