@@ -25,7 +25,7 @@ eurlex get 02016R0679-20160504 --cache only
 eurlex doctor --offline
 ```
 
-Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `only` (strictly no network), `refresh`, and `off`. Set `EURLEX_CACHE_DIR` to choose a cache directory. Auto cache hits are labelled `cached`; offline hits are `not_checked`. Artifact and query cache schemas, identities, timestamps, MIME/structure, byte counts, and hashes are validated on read and by `doctor`.
+Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `only` (strictly no network), `refresh`, and `off`. Set `EURLEX_CACHE_DIR` to choose a cache directory. Auto metadata cache hits are labelled `cached`; offline metadata hits are `not_checked`. Artifact hits are always `not_checked`, even in auto mode, because upstream freshness is not revalidated; their original retrieval time and hash are preserved. Artifact and query cache schemas, identities, timestamps, MIME/structure, byte counts, and hashes are validated on read and by `doctor`.
 
 ## Retrieval guarantees
 

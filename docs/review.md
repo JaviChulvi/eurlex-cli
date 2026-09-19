@@ -19,6 +19,10 @@ A final review found no remaining security concerns but proposed labelling auto 
 
 Interrupted test runs could leave local source/cache directories beneath `docs`; those directories are ignored and no source bodies are committed.
 
+## Final PR review
+
+After PR #1 was opened, a fresh independent Codex run reviewed the committed diff through `165cf8c97f29c7596871852e7122aa92b74f4163`, including all production code, tests, scripts and evidence. Verdict: **passed**, no security concerns or logic errors. It reran all 65 tests and 44 focused cache/download/subprocess tests successfully. Its only non-blocking suggestion—clarifying the same metadata/artifact freshness distinction in the README—was applied in the subsequent documentation-only commit. No runtime code changed after this reviewed commit.
+
 ## Acceptance evidence
 
 See [testing.md](testing.md), [installed offline matrix](e2e-offline.json) and [live/replay matrix](e2e-live.json). Unit/regression suite: 65 passing tests. Installed matrix: 43 passing cases (get 10, formats 10, download 10, doctor 13). Live/replay matrix: 43 passing cases (33 actual public CELLAR executions, 10 offline replays of those real downloads). These are separate categories, not 86 live network tests.
