@@ -93,6 +93,18 @@ def test_never_overwrites_existing_output(tmp_path):
     assert target.read_bytes() == b"mine"
 
 
+def test_manifest_collision_rolls_back_new_artifact(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    manifest = out / "32016R0679_en.manifest.json"
+    manifest.write_bytes(b"mine")
+    with pytest.raises(EurlexError) as error:
+        client(tmp_path, FixtureServer()).download("32016R0679", "en", "pdf", out)
+    assert error.value.code == "output_exists"
+    assert manifest.read_bytes() == b"mine"
+    assert not (out / "32016R0679_en.pdf").exists()
+
+
 def test_corrupt_cached_blob_is_explicit(tmp_path):
     online = client(tmp_path, FixtureServer())
     result = online.download("32016R0679", "en", "pdf", tmp_path / "first")
@@ -253,6 +265,42 @@ def test_interrupted_transfer_is_explicit(tmp_path):
     with pytest.raises(EurlexError) as error:
         client(tmp_path, interrupted).download("32016R0679", "en", "pdf", tmp_path / "out")
     assert error.value.code == "download_incomplete"
+
+
+def test_artifact_content_length_must_match_body(tmp_path):
+    server = FixtureServer()
+    def mismatched(request):
+        if request.url.path.endswith("/sparql"):
+            return server(request)
+        return httpx.Response(200, content=PDF, headers={
+            "content-type": "application/pdf", "content-length": str(len(PDF) + 1)})
+    with pytest.raises(EurlexError) as error:
+        client(tmp_path, mismatched).download("32016R0679", "en", "pdf", tmp_path / "out")
+    assert error.value.code == "download_incomplete"
+
+
+def test_stream_value_error_subclass_stays_structured(tmp_path):
+    class DecodeError(ValueError):
+        pass
+    class Broken(httpx.SyncByteStream):
+        def __iter__(self):
+            raise DecodeError("controlled decoder failure")
+            yield b""
+    def responder(request):
+        return httpx.Response(200, stream=Broken())
+    with pytest.raises(EurlexError) as error:
+        client(tmp_path, responder)._fetch_item(ITEM_PDF, "application/pdf;type=pdfa1a", "en")
+    assert error.value.code == "download_incomplete"
+
+
+def test_failed_staging_cleans_temporary_file(tmp_path, monkeypatch):
+    def fail_sync(_fd):
+        raise OSError("controlled disk failure")
+    monkeypatch.setattr("eurlex_cli.core.os.fsync", fail_sync)
+    with pytest.raises(EurlexError) as error:
+        CellarClient._write_exclusive(tmp_path / "output.pdf", PDF)
+    assert error.value.code == "download_incomplete"
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_format_unavailable_and_formex_are_explicit(tmp_path):

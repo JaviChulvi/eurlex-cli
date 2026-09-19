@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -169,6 +170,34 @@ def _validate_manifest(manifest: Any, data: bytes, identity: tuple[str, str, str
     return manifest
 
 
+@contextmanager
+def _staged_file(path: Path, data: bytes):
+    handle = tempfile.NamedTemporaryFile(prefix=".eurlex-", dir=path.parent, delete=False)
+    try:
+        with handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        yield handle.name
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
+
+
+def _read_bounded(response: httpx.Response, limit: int, *, require_exact_length: bool) -> bytes:
+    value = response.headers.get("content-length")
+    declared = int(value) if value is not None else None
+    if declared is not None and (declared > limit or require_exact_length and declared < 0):
+        raise OverflowError
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        if len(chunk) > limit - len(body):
+            raise OverflowError
+        body.extend(chunk)
+    if require_exact_length and declared is not None and declared != len(body):
+        raise EOFError
+    return bytes(body)
+
+
 class ArtifactCache:
     """Small content-addressed cache; request values only appear behind hashes."""
 
@@ -181,37 +210,60 @@ class ArtifactCache:
     def _entry_path(self, celex: str, language: str, fmt: str) -> Path:
         return self.entries / f"{_key(celex, language, fmt)}.json"
 
+    def _read_manifest(self, path: Path, identity: tuple[str, str, str] | None = None) -> tuple[bytes, dict[str, Any]]:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("manifest is not an object")
+        digest = manifest.get("sha256")
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            raise ValueError("invalid digest")
+        data = (self.blobs / digest).read_bytes()
+        manifest = _validate_manifest(manifest, data, identity)
+        expected_name = f"{_key(manifest['celex'], manifest['language'], manifest['format'])}.json"
+        if path.name != expected_name:
+            raise ValueError("entry identity mismatch")
+        return data, manifest
+
+    @staticmethod
+    def _read_query(path: Path) -> tuple[list[dict[str, str]], str]:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("query cache is not an object")
+        digest = payload.get("query_sha256")
+        if (payload.get("schema_version") != "1.0" or not isinstance(digest, str)
+                or not SHA256_RE.fullmatch(digest) or path.name != f"{digest}.json"):
+            raise ValueError("query identity mismatch")
+        _parse_timestamp(payload["cached_at"])
+        return _validate_rows(payload["rows"]), payload["cached_at"]
+
     def load(self, celex: str, language: str, fmt: str) -> tuple[bytes, dict[str, Any]] | None:
         path = self._entry_path(celex, language, fmt)
         if not path.exists():
             return None
         try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict):
-                raise ValueError("manifest is not an object")
-            digest = manifest["sha256"]
-            if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
-                raise ValueError("invalid digest")
-            blob = (self.blobs / digest).read_bytes()
-            _validate_manifest(manifest, blob, (celex, language, fmt))
+            blob, manifest = self._read_manifest(path, (celex, language, fmt))
         except (OSError, ValueError, KeyError, TypeError, AttributeError, EurlexError) as exc:
             raise EurlexError("cache_corrupt", "Cached artifact metadata is corrupt") from exc
         return blob, manifest
 
     def store(self, celex: str, language: str, fmt: str, data: bytes, manifest: dict[str, Any]) -> None:
-        digest = hashlib.sha256(data).hexdigest()
         try:
-            _validate_manifest(manifest, data, (celex, language, fmt))
+            digest = _validate_manifest(manifest, data, (celex, language, fmt))["sha256"]
             self.blobs.mkdir(parents=True, exist_ok=True)
             self.entries.mkdir(parents=True, exist_ok=True)
             blob_path = self.blobs / digest
-            self._atomic_create(blob_path, data)
+            if not blob_path.exists():
+                with _staged_file(blob_path, data) as temporary:
+                    try:
+                        os.link(temporary, blob_path)
+                    except FileExistsError:
+                        pass
             if blob_path.read_bytes() != data:
-                self._atomic_replace(blob_path, data)
-            self._atomic_replace(self._entry_path(celex, language, fmt),
-                                 json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n")
-        except EurlexError:
-            raise
+                with _staged_file(blob_path, data) as temporary:
+                    os.replace(temporary, blob_path)
+            entry = self._entry_path(celex, language, fmt)
+            with _staged_file(entry, json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n") as temporary:
+                os.replace(temporary, entry)
         except (OSError, ValueError, TypeError) as exc:
             raise EurlexError("io_error", "Could not update the artifact cache", {"reason": str(exc)}) from exc
 
@@ -220,14 +272,7 @@ class ArtifactCache:
         if not path.exists():
             return None
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("query cache is not an object")
-            if payload.get("schema_version") != "1.0" or payload.get("query_sha256") != _key(query):
-                raise ValueError("query identity mismatch")
-            rows = _validate_rows(payload["rows"])
-            _parse_timestamp(payload["cached_at"])
-            return rows, payload["cached_at"]
+            return self._read_query(path)
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise EurlexError("cache_corrupt", "Cached metadata is corrupt") from exc
 
@@ -237,8 +282,9 @@ class ArtifactCache:
             payload = {"schema_version": "1.0", "query_sha256": _key(query),
                        "cached_at": cached_at, "rows": _validate_rows(rows)}
             self.queries.mkdir(parents=True, exist_ok=True)
-            self._atomic_replace(self.queries / f"{_key(query)}.json",
-                                 json.dumps(payload, sort_keys=True).encode() + b"\n")
+            path = self.queries / f"{_key(query)}.json"
+            with _staged_file(path, json.dumps(payload, sort_keys=True).encode() + b"\n") as temporary:
+                os.replace(temporary, path)
         except (OSError, ValueError, TypeError) as exc:
             raise EurlexError("io_error", "Could not update the metadata cache", {"reason": str(exc)}) from exc
         return cached_at
@@ -265,72 +311,18 @@ class ArtifactCache:
                 raise EurlexError("cache_corrupt", f"Cache integrity check failed for blob {blob_path.name}") from exc
         for entry in entry_files:
             try:
-                manifest = json.loads(entry.read_text(encoding="utf-8"))
-                if not isinstance(manifest, dict):
-                    raise ValueError("manifest is not an object")
-                digest = manifest["sha256"]
-                if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
-                    raise ValueError("invalid digest")
-                blob = (self.blobs / digest).read_bytes()
-                _validate_manifest(manifest, blob)
-                expected_name = f"{_key(manifest['celex'], manifest['language'], manifest['format'])}.json"
-                if entry.name != expected_name:
-                    raise ValueError("entry identity mismatch")
+                self._read_manifest(entry)
                 checked += 1
             except (OSError, ValueError, KeyError, TypeError, AttributeError, EurlexError) as exc:
                 raise EurlexError("cache_corrupt", f"Cache integrity check failed for {entry.name}") from exc
         for query_path in query_files:
             try:
-                payload = json.loads(query_path.read_text(encoding="utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("query cache is not an object")
-                digest = payload["query_sha256"]
-                if (payload.get("schema_version") != "1.0" or not isinstance(digest, str)
-                        or not SHA256_RE.fullmatch(digest) or query_path.name != f"{digest}.json"):
-                    raise ValueError("query identity mismatch")
-                _parse_timestamp(payload["cached_at"])
-                _validate_rows(payload["rows"])
+                self._read_query(query_path)
                 queries_checked += 1
             except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
                 raise EurlexError("cache_corrupt", f"Cache integrity check failed for {query_path.name}") from exc
         return {"status": "ok", "artifacts_checked": checked, "blobs_checked": blobs_checked,
                 "queries_checked": queries_checked, "path": str(self.root)}
-
-    @staticmethod
-    def _atomic_create(path: Path, data: bytes) -> None:
-        if path.exists():
-            return
-        fd, temporary = tempfile.mkstemp(prefix=".eurlex-", dir=path.parent)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                pass
-        finally:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-
-    @staticmethod
-    def _atomic_replace(path: Path, data: bytes) -> None:
-        fd, temporary = tempfile.mkstemp(prefix=".eurlex-", dir=path.parent)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        finally:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-
 
 class CellarClient:
     def __init__(self, http: httpx.Client | None = None, cache: ArtifactCache | None = None,
@@ -366,16 +358,11 @@ class CellarClient:
                         "query": query, "format": "application/sparql-results+json",
                 }, headers={"Accept": "application/sparql-results+json"}) as streamed:
                     response = streamed
-                    declared = streamed.headers.get("content-length")
-                    if declared is not None and int(declared) > MAX_METADATA_BYTES:
-                        raise EurlexError("parse_error", "SPARQL response exceeds the 2 MiB safety limit")
-                    chunks, total = [], 0
-                    for chunk in streamed.iter_bytes():
-                        total += len(chunk)
-                        if total > MAX_METADATA_BYTES:
-                            raise EurlexError("parse_error", "SPARQL response exceeds the 2 MiB safety limit")
-                        chunks.append(chunk)
-                    body = b"".join(chunks)
+                    try:
+                        body = _read_bounded(streamed, MAX_METADATA_BYTES, require_exact_length=False)
+                    except OverflowError as exc:
+                        raise EurlexError(
+                            "parse_error", "SPARQL response exceeds the 2 MiB safety limit") from exc
             except EurlexError:
                 raise
             except httpx.HTTPError as exc:
@@ -532,22 +519,14 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
                             raise EurlexError("rate_limited", "CELLAR rate limit reached")
                         if response.status_code >= 400:
                             raise EurlexError("upstream_unavailable", f"CELLAR returned HTTP {response.status_code}")
-                        declared = response.headers.get("content-length")
-                        if declared is not None:
-                            try:
-                                if int(declared) > MAX_ARTIFACT_BYTES or int(declared) < 0:
-                                    raise EurlexError("download_incomplete", "Artifact exceeds the 64 MiB safety limit")
-                            except ValueError as exc:
-                                raise EurlexError("download_incomplete", "Artifact Content-Length is invalid") from exc
-                        chunks, total = [], 0
-                        for chunk in response.iter_bytes():
-                            total += len(chunk)
-                            if total > MAX_ARTIFACT_BYTES:
-                                raise EurlexError("download_incomplete", "Artifact exceeds the 64 MiB safety limit")
-                            chunks.append(chunk)
-                        data = b"".join(chunks)
-                        if declared is not None and int(declared) != len(data):
-                            raise EurlexError("download_incomplete", "Artifact length did not match Content-Length")
+                        try:
+                            data = _read_bounded(response, MAX_ARTIFACT_BYTES, require_exact_length=True)
+                        except OverflowError as exc:
+                            raise EurlexError("download_incomplete", "Artifact exceeds the 64 MiB safety limit") from exc
+                        except ValueError as exc:
+                            raise EurlexError("download_incomplete", "Artifact Content-Length is invalid") from exc
+                        except EOFError as exc:
+                            raise EurlexError("download_incomplete", "Artifact length did not match Content-Length") from exc
                         content_type = response.headers.get("content-type", "").split(",", 1)[0].strip().lower()
                         try:
                             _validate_payload(data, mime, content_type)
@@ -573,9 +552,7 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
         if fmt not in FORMAT_MIMES:
             raise EurlexError("format_unavailable", "Supported formats are pdf and xhtml", {"format": fmt}, 3)
 
-        cached = None
-        if self.cache and self.cache_mode in {"auto", "only"}:
-            cached = self.cache.load(celex, language, fmt)
+        cached = self.cache.load(celex, language, fmt) if self.cache and self.cache_mode in {"auto", "only"} else None
         if self.cache_mode == "only" and cached is None:
             raise EurlexError("cache_miss", "Artifact is not available offline", exit_code=3)
         if cached:
@@ -626,10 +603,8 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
                 raise OSError("output path is not a directory")
         except OSError as exc:
             raise EurlexError("io_error", "Could not create the output directory", {"reason": str(exc)}) from exc
-        artifact = out / f"{celex}_{language}.{fmt if fmt == 'pdf' else 'xhtml'}"
+        artifact = out / f"{celex}_{language}.{fmt}"
         manifest_path = out / f"{celex}_{language}.manifest.json"
-        if artifact.exists() or manifest_path.exists():
-            raise EurlexError("output_exists", "Output already exists; refusing to overwrite", exit_code=5)
         self._write_exclusive(artifact, data)
         try:
             self._write_exclusive(manifest_path, json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n")
@@ -640,21 +615,10 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
 
     @staticmethod
     def _write_exclusive(path: Path, data: bytes) -> None:
-        temporary = None
         try:
-            fd, temporary = tempfile.mkstemp(prefix=".eurlex-output-", dir=path.parent)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.link(temporary, path)
+            with _staged_file(path, data) as temporary:
+                os.link(temporary, path)
         except FileExistsError as exc:
             raise EurlexError("output_exists", "Output already exists; refusing to overwrite", exit_code=5) from exc
         except OSError as exc:
             raise EurlexError("download_incomplete", "Could not write the complete output", {"reason": str(exc)}) from exc
-        finally:
-            if temporary:
-                try:
-                    os.unlink(temporary)
-                except FileNotFoundError:
-                    pass

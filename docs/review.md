@@ -1,30 +1,12 @@
-# Phase 1 independent review and fixes
+# Review and simplification
 
-Fresh Codex CLI contexts reviewed the implementation separately from the coding run; the orchestrator reviewed the diff and reran the installed executable. No review agent committed or pushed code. The original main branch contains only the project introduction.
+Four independent Codex review passes examined reuse, quality, efficiency, and ownership. The selected changes keep the CLI and cache contracts intact:
 
-## Blocking findings fixed
+- Cache loads and `doctor` share manifest/query readers instead of maintaining duplicate validators.
+- A shared staging helper owns temporary writes, fsync, and cleanup. Publication policy stays explicit: replace cache indexes, preserve existing blobs, never overwrite user outputs.
+- One bounded body reader handles byte accounting; metadata and document retry/redirect handling remain separate.
+- Artifact storage reuses the already-validated digest rather than hashing it again.
 
-- Mutable cache indexes did not replace stale entries on refresh. Atomic replacement plus fresh-client offline replay regressions now cover queries and artifact hashes.
-- Cached manifests lacked identity/schema checks. Validate CELEX/language/format, timestamps, URLs, selected and returned MIME, byte counts, digest and payload; `doctor` inspects query and blob integrity too.
-- Format discovery did not establish a unique work first, conflating absent works with absent representations. Resolution is explicit before discovery; unknown item-bearing types remain visible as unsupported.
-- Metadata was fully buffered before its size check. SPARQL responses are streamed under a 2 MiB cap.
-- URL validation allowed userinfo/nondefault ports. Official origin checks now reject credentials, fragments and nondefault ports at every item/redirect boundary.
-- XHTML prefix checks accepted malformed XML. Complete namespaced XHTML parsing is now entity-safe through `defusedxml`. A second review reproduced a UTF-16 declaration bypass in the interim byte-regex approach; UTF-16/UTF-32 regressions cover the final parser.
-- Malformed cache values and directory failures escaped machine errors. Object-shape, timestamp and structured I/O error coverage was added; a second pass covered valid JSON list/null cache files.
-- Live evidence discarded provenance. Reports now retain identities, URLs, timestamps, byte counts, hashes and real-download offline replay comparisons.
+Follow-up review caught temporary-file cleanup and stream-error regressions in the draft refactor; failing regression tests were added before fixing them. Buffer limits are checked before copying a chunk, and exception subclasses remain structured errors.
 
-## Review adjudication and documentation
-
-A final review found no remaining security concerns but proposed labelling auto artifact hits `cached` instead of `not_checked`. This recommendation was not applied: artifact hits deliberately do not revalidate upstream freshness, in either auto or offline mode. Only metadata has a 24-hour policy. The contract now states that distinction explicitly; changing the label to imply a freshness check would be misleading. Original artifact retrieval time and hash remain unchanged.
-
-Interrupted test runs could leave local source/cache directories beneath `docs`; those directories are ignored and no source bodies are committed.
-
-## Final PR review
-
-After PR #1 was opened, a fresh independent Codex run reviewed the committed diff through `165cf8c97f29c7596871852e7122aa92b74f4163`, including all production code, tests, scripts and evidence. Verdict: **passed**, no security concerns or logic errors. It reran all 65 tests and 44 focused cache/download/subprocess tests successfully. Its only non-blocking suggestion—clarifying the same metadata/artifact freshness distinction in the README—was applied in the subsequent documentation-only commit. No runtime code changed after this reviewed commit.
-
-## Acceptance evidence
-
-See [testing.md](testing.md), [installed offline matrix](e2e-offline.json) and [live/replay matrix](e2e-live.json). Unit/regression suite: 65 passing tests. Installed matrix: 43 passing cases (get 10, formats 10, download 10, doctor 13). Live/replay matrix: 43 passing cases (33 actual public CELLAR executions, 10 offline replays of those real downloads). These are separate categories, not 86 live network tests.
-
-The live observed limitations remain explicit: narrowly supported PDF/A-1a absent for DORA and AI Act; tested GDPR corrigendum resolves but no EN/ES item representations were returned. Expected failure checks are retained instead of manufacturing successful files. No search, versions, relationships, article extraction, broad language support or universal CELEX coverage is claimed.
+Production Python is 733 physical lines, down from 769; nonblank/noncomment lines fell from 698 to 659. Security validation and exact-source selection were retained, not removed to meet a line target. See [testing.md](testing.md) for current validation. E2E infrastructure was removed separately at the user's request.

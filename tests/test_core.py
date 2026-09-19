@@ -152,3 +152,29 @@ def test_metadata_stream_limit_is_enforced_before_full_body_is_read():
     with pytest.raises(EurlexError) as error:
         CellarClient(http=httpx.Client(transport=httpx.MockTransport(responder))).get("32016R0679")
     assert error.value.code == "parse_error"
+
+
+def test_bounded_reader_rejects_chunk_before_copying_it():
+    import tracemalloc
+    from eurlex_cli.core import _read_bounded
+    payload = b"x" * 10_000_000
+    class Chunk(httpx.SyncByteStream):
+        def __iter__(self):
+            yield payload
+    response = httpx.Response(200, stream=Chunk())
+    tracemalloc.start()
+    try:
+        with pytest.raises(OverflowError):
+            _read_bounded(response, 8, require_exact_length=False)
+        assert tracemalloc.get_traced_memory()[1] < 1_000_000
+    finally:
+        tracemalloc.stop()
+
+
+def test_metadata_content_length_is_only_a_safety_cap():
+    body = json.dumps(sparql({"work": WORK})).encode()
+    def responder(request):
+        return httpx.Response(200, content=body, headers={
+            "content-type": "application/sparql-results+json", "content-length": "1"})
+    result = CellarClient(http=httpx.Client(transport=httpx.MockTransport(responder))).get("32016R0679")
+    assert result["work"] == WORK

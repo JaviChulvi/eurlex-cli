@@ -25,7 +25,7 @@ eurlex get 02016R0679-20160504 --cache only
 eurlex doctor --offline
 ```
 
-Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `only` (strictly no network), `refresh`, and `off`. Set `EURLEX_CACHE_DIR` to choose a cache directory. Auto metadata cache hits are labelled `cached`; offline metadata hits are `not_checked`. Artifact hits are always `not_checked`, even in auto mode, because upstream freshness is not revalidated; their original retrieval time and hash are preserved. Artifact and query cache schemas, identities, timestamps, MIME/structure, byte counts, and hashes are validated on read and by `doctor`.
+Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `only` (strictly no network), `refresh`, and `off`. Set `EURLEX_CACHE_DIR` to choose a cache directory. Auto metadata hits are labelled `cached`; artifact and offline hits are `not_checked`. Artifact and query cache schemas, identities, timestamps, MIME/structure, byte counts, and hashes are validated on read and by `doctor`.
 
 ## Retrieval guarantees
 
@@ -41,11 +41,11 @@ Cache modes are `auto` (use metadata up to 24 hours old and cached artifacts), `
 - Manifests retain the exact discovered item URI, actual HTTPS requested URL, final URL, transport-upgrade disclosure, selected and response MIME types, CELLAR identities, validated document date when supplied, retrieval time, byte count, and SHA-256.
 - Final artifact and manifest publication is atomic and exclusive; existing outputs are never overwritten.
 
-See [contracts](docs/contracts.md), [supported coverage](docs/support.md), and [test evidence](docs/testing.md).
+See [contracts](docs/contracts.md), [supported coverage](docs/support.md), and [testing](docs/testing.md).
 
 ## Current coverage and limitations
 
-EN and ES are supported. Live evidence covers GDPR (`32016R0679`), DORA (`32022R2554`), NIS2 (`32022L2555`), the AI Act (`32024R1689`), GDPR consolidation `02016R0679-20160504`, and corrigendum `32016R0679R(01)`. Representation availability varies: the tested DORA and AI Act expressions did not advertise the narrowly supported PDF/A-1a type, and the corrigendum work exposed neither EN nor ES item representations. These remain explicit failures rather than substitutions.
+EN and ES are supported. Initial live checks covered GDPR (`32016R0679`), DORA (`32022R2554`), NIS2 (`32022L2555`), the AI Act (`32024R1689`), GDPR consolidation `02016R0679-20160504`, and corrigendum `32016R0679R(01)`. Representation availability varies: the tested DORA and AI Act expressions did not advertise the narrowly supported PDF/A-1a type, and the corrigendum work exposed neither EN nor ES item representations. These remain explicit failures rather than substitutions.
 
 This is exact retrieval, not full-text search or a universal EUR-Lex client. Search, versions, relations, article extraction, MCP, databases, Formex extraction, OCR, and bulk crawling are outside Phase 1. Only validated `cdm:work_date_document` is exposed as `document_date`; other dates are absent rather than guessed. Query bounds never claim completeness after truncation.
 
@@ -54,11 +54,9 @@ This is exact retrieval, not full-text search or a universal EUR-Lex client. Sea
 ```bash
 uv sync --locked
 uv run pytest -q
-scripts/run-installed-e2e.sh
-EURLEX_LIVE=1 scripts/run-live-e2e.sh  # opt-in public network checks
 ```
 
-The included [CI workflow template](docs/ci-workflow.yml) runs offline after dependency installation and uses only controlled, synthetic fixture bytes. GitHub Actions is not enabled in this PR: the available GitHub token cannot create workflow files without `workflow` scope. A maintainer can copy the template to `.github/workflows/ci.yml`. The same commands passed locally. No real document body is redistributed in the repository.
+The focused unit and CLI contract tests run offline using synthetic fixtures. E2E harnesses, generated reports, and the CI template are intentionally omitted for now. No real document body is redistributed in the repository.
 
 ## Official source and legal notice
 
