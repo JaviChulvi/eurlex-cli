@@ -75,7 +75,7 @@ uv run python scripts/nightly_smoke.py
 
 The regular tests use synthetic fixtures and do not depend on upstream availability. The smoke script checks all four commands, EN/ES formats, PDF/XHTML downloads, manifest hashes, offline replay and invalid input. It uses temporary files, prints a short result, and returns nonzero on failure. A failed live check may indicate an upstream outage rather than a CLI regression.
 
-The [CLI checks workflow](.github/workflows/cli-checks.yml) runs the smoke check on GitHub Actions at **21:00 Europe/Madrid daily**, following daylight-saving changes automatically. It also supports manual runs from the Actions tab. Regression tests run on Python 3.11 and 3.14 for pull requests, pushes to `main`, nightly runs and manual runs; live CELLAR checks run only for nightly and manual runs. Running the smoke script locally checks immediately. No generated reports or source document bodies are committed.
+The [CLI checks workflow](.github/workflows/cli-checks.yml) uses a single Python 3.14 job. It runs regression tests for pull requests, pushes to `main`, nightly runs and manual runs. Nightly runs at **21:00 Europe/Madrid daily** and manual runs from the Actions tab also run the live CELLAR smoke check. The schedule follows daylight-saving changes automatically. Running the smoke script locally checks immediately. No generated reports or source document bodies are committed.
 
 ## Sources and legal notice
 
