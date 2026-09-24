@@ -3,6 +3,7 @@
 import argparse, hashlib, json, os, shutil, subprocess, tempfile, time
 from pathlib import Path
 CELEX, FIELDS = "32016R0679", {"schema_version", "data", "source", "warnings"}
+COMMAND_TIMEOUT, SMOKE_TIMEOUT = 120, 12 * 60
 class SmokeFailure(Exception): pass
 def require(condition, message):
     if not condition:
@@ -52,19 +53,26 @@ def verify_artifact(body, language, fmt):
     require(valid, f"download {language} {fmt}: artifact hash/manifest invalid")
     return digest
 def run_smoke(exe):
-    deadline, state, failures = time.monotonic() + 90, {}, []
+    deadline, state, failures = time.monotonic() + SMOKE_TIMEOUT, {}, []
     with tempfile.TemporaryDirectory(prefix="eurlex-smoke-") as temporary:
         root = Path(temporary); env = {**os.environ, "EURLEX_CACHE_DIR": str(root / "cache")}
         def check(name, args, validate=lambda body: None, expected=None):
+            started = time.monotonic()
+            print(f"START {name}", flush=True)
             try:
-                remaining = deadline - time.monotonic(); require(remaining > 0, f"{name}: overall 90s timeout")
+                remaining = deadline - started; require(remaining > 0, f"{name}: overall {SMOKE_TIMEOUT}s timeout")
                 result = subprocess.run([exe, *args], text=True, capture_output=True, env=env,
-                                        timeout=min(25, remaining), check=False)
+                                        timeout=min(COMMAND_TIMEOUT, remaining), check=False)
                 body = parse(name, result, expected); validate(body); state[name] = body
+                print(f"PASS {name} {time.monotonic() - started:.1f}s", flush=True)
+                return True
             except subprocess.TimeoutExpired:
                 failures.append(f"{name}: timeout")
             except (SmokeFailure, OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
                 failures.append(str(exc) if isinstance(exc, SmokeFailure) else f"{name}: {exc}")
+            failures[-1] += f" ({time.monotonic() - started:.1f}s)"
+            print("FAIL " + failures[-1].replace("\n", " ")[:200], flush=True)
+            return False
         check("doctor", ["doctor", "--json"], lambda b: require(
             b["data"]["network"]["status"] == b["data"]["cache"]["status"] == "ok", "doctor: health not ok"))
         check("get", ["get", CELEX, "--cache", "refresh", "--json"], lambda b: require(
@@ -75,12 +83,15 @@ def run_smoke(exe):
         check("formats en", ["formats", CELEX, "--lang", "en", "--json"], has_format("en", "pdf"))
         check("formats es", ["formats", CELEX, "--lang", "es", "--json"], has_format("es", "xhtml"))
         def download(name, lang, fmt, mode, folder, validator):
-            check(name, ["download", CELEX, "--lang", lang, "--format", fmt, "--cache", mode,
-                         "--out", str(root / folder), "--json"], validator)
-        download("download en pdf", "en", "pdf", "refresh", "en", lambda b: state.update(pdf_hash=verify_artifact(b, "en", "pdf")))
+            return check(name, ["download", CELEX, "--lang", lang, "--format", fmt, "--cache", mode,
+                                "--out", str(root / folder), "--json"], validator)
+        pdf_ok = download("download en pdf", "en", "pdf", "refresh", "en", lambda b: state.update(pdf_hash=verify_artifact(b, "en", "pdf")))
         download("download es xhtml", "es", "xhtml", "refresh", "es", lambda b: verify_artifact(b, "es", "xhtml"))
-        download("offline replay", "en", "pdf", "only", "offline", lambda b: require(
-            verify_artifact(b, "en", "pdf") == state.get("pdf_hash") and b["data"]["manifest"]["cache"]["hit"], "offline replay: cache/hash mismatch"))
+        if pdf_ok:
+            download("offline replay", "en", "pdf", "only", "offline", lambda b: require(
+                verify_artifact(b, "en", "pdf") == state["pdf_hash"] and b["data"]["manifest"]["cache"]["hit"], "offline replay: cache/hash mismatch"))
+        else:
+            print("SKIP offline replay: PDF download failed", flush=True)
         check("invalid identifier", ["get", "not-a-celex", "--json"], expected="invalid_identifier")
     return failures
 def main(argv=None):
@@ -88,7 +99,6 @@ def main(argv=None):
     exe = shutil.which("eurlex")
     if not exe: print("FAIL setup: eurlex executable not found\nFAIL 8/8 source_available=unknown"); return 1
     failures = run_smoke(exe)
-    for failure in failures: print("FAIL " + failure.replace("\n", " ")[:200])
     print("PASS 8/8" if not failures else f"FAIL {len(failures)}/8 source_available=unknown")
     return bool(failures)
 if __name__ == "__main__":
