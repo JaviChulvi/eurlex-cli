@@ -64,5 +64,60 @@ def test_malformed_success_fields_report_failures_without_crashing(monkeypatch):
                "source": {}, "warnings": []}
     monkeypatch.setattr(smoke.subprocess, "run", lambda *a, **kw: completed(stdout=json.dumps(payload)))
     failures = smoke.run_smoke("eurlex")
-    assert len(failures) == 8
+    assert len(failures) == 7
     assert any(message.startswith("get:") for message in failures)
+
+
+def test_slow_cli_error_reports_elapsed_time_and_keeps_retry_budget(monkeypatch, capsys):
+    clock = [0.0]
+    timeouts = []
+    error = {"schema_version": "1.0", "error": {
+        "code": "upstream_unavailable", "message": "CELLAR request failed", "details": {}}}
+
+    def slow_error(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock[0] += 65
+        return completed(1, stderr=json.dumps(error))
+
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(smoke.subprocess, "run", slow_error)
+    failures = smoke.run_smoke("eurlex")
+
+    assert timeouts == [120] * 7
+    assert len(failures) == 7
+    assert "doctor: exit 1 upstream_unavailable: CELLAR request failed (65.0s)" in failures
+    assert "SKIP offline replay: PDF download failed" in capsys.readouterr().out
+
+
+def test_pdf_timeout_skips_offline_replay_without_hiding_failure(monkeypatch, capsys):
+    commands = []
+
+    def fail_commands(command, **kwargs):
+        commands.append(command)
+        if command[1] == "download" and "en" in command:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return completed(1, stderr='{"error":{"code":"upstream_unavailable","message":"CELLAR failed"}}')
+
+    monkeypatch.setattr(smoke.subprocess, "run", fail_commands)
+    failures = smoke.run_smoke("eurlex")
+
+    assert any(message.startswith("download en pdf: timeout") for message in failures)
+    assert not any("--cache" in command and "only" in command for command in commands)
+    assert "SKIP offline replay: PDF download failed" in capsys.readouterr().out
+
+
+def test_overall_deadline_caps_remaining_command_time(monkeypatch):
+    clock = [0.0]
+    timeouts = []
+
+    def slow_commands(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock[0] += kwargs["timeout"]
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(smoke.subprocess, "run", slow_commands)
+    failures = smoke.run_smoke("eurlex")
+
+    assert timeouts == [120] * 6
+    assert any("overall 720s timeout" in message for message in failures)
