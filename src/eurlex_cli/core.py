@@ -595,7 +595,7 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
                           "freshness": "fresh"},
             }
             if listed["cache"]["hit"]:
-                manifest["cache"] = {"mode": self.cache_mode, **listed["cache"]}
+                manifest["metadata_cache"] = {"mode": self.cache_mode, **listed["cache"]}
             if "source_dates" in listed:
                 manifest["source_dates"] = listed["source_dates"]
             if self.cache and self.cache_mode != "off":

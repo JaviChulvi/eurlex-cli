@@ -154,9 +154,17 @@ def test_composed_metadata_cache_provenance(tmp_path, cached_source, operation):
     else:
         result = client.download("32016R0679", "en", "pdf", tmp_path / "out")["manifest"]
     assert result["source_dates"] == {"document_date": "2016-04-27"}
-    assert result["cache"]["hit"] is True
-    assert result["cache"]["freshness"] == "cached"
-    assert result["cache"]["cached_at"] == min(timestamps.values())
+    metadata_cache = result["metadata_cache"] if operation == "download" else result["cache"]
+    assert metadata_cache["hit"] is True
+    assert metadata_cache["freshness"] == "cached"
+    assert metadata_cache["cached_at"] == min(timestamps.values())
+    if operation == "download":
+        assert result["cache"]["hit"] is False
+        assert result["cache"]["cached_at"] == result["retrieved_at"]
+        cached = client.download("32016R0679", "en", "pdf", tmp_path / "cached")["manifest"]
+        assert cached["cache"]["hit"] is True
+        assert cached["cache"]["cached_at"] == result["retrieved_at"]
+        assert cached["metadata_cache"] == result["metadata_cache"]
 
 
 def test_composed_offline_metadata_remains_not_checked(tmp_path):
