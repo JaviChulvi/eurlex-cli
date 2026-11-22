@@ -188,13 +188,37 @@ def _read_bounded(response: httpx.Response, limit: int, *, require_exact_length:
     declared = int(value) if value is not None else None
     if declared is not None and (declared > limit or require_exact_length and declared < 0):
         raise OverflowError
+    # Enforce the wire limit before httpx passes each chunk to its decoder.
+    preloaded = response.is_stream_consumed
+    if not preloaded:
+        original_stream = response.stream
+
+        class BoundedStream(httpx.SyncByteStream):
+            def __iter__(self):
+                wire_bytes = 0
+                for chunk in original_stream:
+                    wire_bytes += len(chunk)
+                    if wire_bytes > limit:
+                        raise OverflowError
+                    yield chunk
+
+            def close(self):
+                original_stream.close()
+
+        response.stream = BoundedStream()
+    elif response.num_bytes_downloaded > limit:
+        raise OverflowError
     body = bytearray()
     for chunk in response.iter_bytes():
         if len(chunk) > limit - len(body):
             raise OverflowError
         body.extend(chunk)
-    if require_exact_length and declared is not None and declared != len(body):
-        raise EOFError
+    if require_exact_length and declared is not None:
+        if preloaded and response.headers.get("content-encoding", "identity").lower() != "identity":
+            raise EOFError  # The decoded, preloaded body no longer exposes its wire length.
+        wire_length = len(body) if preloaded else response.num_bytes_downloaded
+        if declared != wire_length:
+            raise EOFError
     return bytes(body)
 
 

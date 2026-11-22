@@ -310,3 +310,42 @@ def test_format_unavailable_and_formex_are_explicit(tmp_path):
     with pytest.raises(EurlexError) as error:
         client(tmp_path, FixtureServer()).download("32016R0679", "en", "fmx4", tmp_path / "out")
     assert error.value.code == "unsupported_structure"
+
+
+def test_gzip_artifact_uses_wire_length_and_writes_decoded_bytes(tmp_path):
+    import gzip
+    compressed = gzip.compress(PDF)
+    server = FixtureServer()
+    def responder(request):
+        if request.url.path.endswith('/sparql'):
+            return server(request)
+        return httpx.Response(200, stream=httpx.ByteStream(compressed), headers={
+            'content-type': 'application/pdf', 'content-encoding': 'gzip',
+            'content-length': str(len(compressed))})
+    result = client(tmp_path, responder).download('32016R0679', 'en', 'pdf', tmp_path / 'out')
+    assert Path(result['path']).read_bytes() == PDF
+    assert result['manifest']['byte_count'] == len(PDF)
+
+
+def test_compressed_stream_limits_and_truncated_transfer():
+    import gzip
+    from eurlex_cli.core import _read_bounded
+    compressed = gzip.compress(b'x' * 1000)
+    class Stream(httpx.SyncByteStream):
+        def __init__(self, data):
+            self.data = data
+        def __iter__(self):
+            yield self.data
+    def response(data, declared):
+        return httpx.Response(200, stream=Stream(data), headers={
+            'content-encoding': 'gzip', 'content-length': str(declared)})
+    with pytest.raises(EOFError):
+        _read_bounded(response(compressed[:-4], len(compressed)), 2000, require_exact_length=True)
+    with pytest.raises(OverflowError):
+        _read_bounded(response(compressed, len(compressed)), 100, require_exact_length=True)
+    with pytest.raises(OverflowError):
+        _read_bounded(response(compressed, len(compressed)), len(compressed) - 1, require_exact_length=True)
+    small = gzip.compress(b'x')
+    with pytest.raises(OverflowError):
+        _read_bounded(httpx.Response(200, stream=Stream(small), headers={
+            'content-encoding': 'gzip'}), 10, require_exact_length=True)
