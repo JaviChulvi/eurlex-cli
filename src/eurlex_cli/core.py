@@ -486,8 +486,11 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
                 "manifestation": row["manifestation"], "item": row["item"],
                 "raw_type": cellar_type, "format": fmt, "mime_type": mime, "supported": supported,
             })
+        cached_sources = [cache for cache in (resolved["cache"], self.last_query_cache) if cache["hit"]]
+        cache_info = (min(cached_sources, key=lambda cache: _parse_timestamp(cache["cached_at"]))
+                      if cached_sources else self.last_query_cache)
         result = {"celex": celex, "language": language, "work": resolved_work, "complete": True,
-                "representations": representations, "cache": self.last_query_cache}
+                "representations": representations, "cache": cache_info}
         if "source_dates" in resolved:
             result["source_dates"] = resolved["source_dates"]
         return result
@@ -591,6 +594,8 @@ SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
                           "cached_at": now if self.cache_mode != "off" else None,
                           "freshness": "fresh"},
             }
+            if listed["cache"]["hit"]:
+                manifest["cache"] = {"mode": self.cache_mode, **listed["cache"]}
             if "source_dates" in listed:
                 manifest["source_dates"] = listed["source_dates"]
             if self.cache and self.cache_mode != "off":

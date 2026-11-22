@@ -119,3 +119,50 @@ def test_doctor_checks_orphan_blob_name_and_content(tmp_path):
     with pytest.raises(EurlexError) as error:
         cache.check()
     assert error.value.code == "cache_corrupt"
+
+
+@pytest.mark.parametrize("cached_source", ["work", "formats", "both"])
+@pytest.mark.parametrize("operation", ["formats", "download"])
+def test_composed_metadata_cache_provenance(tmp_path, cached_source, operation):
+    from test_download import PDF
+
+    def responder(request):
+        if not request.url.path.endswith("/sparql"):
+            return httpx.Response(200, content=PDF, headers={"content-type": "application/pdf"})
+        if "manifestation_manifests_expression" not in request.url.params["query"]:
+            return httpx.Response(200, json=sparql({"work": WORK, "document_date": "2016-04-27"}))
+        return transport(request)
+
+    cache = ArtifactCache(tmp_path / "cache")
+    client = CellarClient(http=httpx.Client(transport=httpx.MockTransport(responder)), cache=cache)
+    client.formats("32016R0679", "en")
+    timestamps = {}
+    for path in cache.queries.glob("*.json"):
+        payload = json.loads(path.read_text())
+        source = "work" if "document_date" in payload["rows"][0] else "formats"
+        if cached_source not in (source, "both"):
+            path.unlink()
+            continue
+        age = 2 if source == "work" else 1
+        timestamp = (datetime.now(timezone.utc) - timedelta(hours=age)).isoformat()
+        payload["cached_at"] = timestamp
+        path.write_text(json.dumps(payload))
+        timestamps[source] = timestamp
+
+    if operation == "formats":
+        result = client.formats("32016R0679", "en")
+    else:
+        result = client.download("32016R0679", "en", "pdf", tmp_path / "out")["manifest"]
+    assert result["source_dates"] == {"document_date": "2016-04-27"}
+    assert result["cache"]["hit"] is True
+    assert result["cache"]["freshness"] == "cached"
+    assert result["cache"]["cached_at"] == min(timestamps.values())
+
+
+def test_composed_offline_metadata_remains_not_checked(tmp_path):
+    cache = ArtifactCache(tmp_path / "cache")
+    online = CellarClient(http=httpx.Client(transport=httpx.MockTransport(transport)), cache=cache)
+    online.formats("32016R0679", "en")
+    result = CellarClient(cache=cache, cache_mode="only").formats("32016R0679", "en")
+    assert result["cache"]["hit"] is True
+    assert result["cache"]["freshness"] == "not_checked"
