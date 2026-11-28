@@ -22,6 +22,7 @@ from defusedxml.common import DefusedXmlException
 
 SPARQL_URL = "https://publications.europa.eu/webapi/rdf/sparql"
 CDM = "http://publications.europa.eu/ontology/cdm#"
+XSD_STRING = "http://www.w3.org/2001/XMLSchema#string"
 CELEX_RE = re.compile(r"(?:[1-9][0-9]{4}[A-Z][0-9]{4}(?:R\([0-9]{2}\))?|0[0-9]{4}[A-Z][0-9]{4}-[0-9]{8})\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 LANGUAGES = {"en": "ENG", "es": "SPA"}
@@ -363,8 +364,15 @@ class CellarClient:
         self.sleeper = sleeper
         self.last_query_cache: dict[str, Any] = {"hit": False, "cached_at": None, "freshness": "fresh"}
 
-    def _query(self, query: str) -> list[dict[str, str]]:
-        cached = self.cache.load_query(query) if self.cache and self.cache_mode in {"auto", "only"} else None
+    def _query_celex(self, query: str, celex: str) -> list[dict[str, str]]:
+        # Preserve the original metadata cache keys so existing offline caches still work.
+        typed = f'"{celex}"^^<{XSD_STRING}> .'
+        legacy = f'?id .\n  FILTER(STR(?id) = "{celex}")'
+        return self._query(query, cache_query=query.replace(typed, legacy, 1))
+
+    def _query(self, query: str, *, cache_query: str | None = None) -> list[dict[str, str]]:
+        cache_query = query if cache_query is None else cache_query
+        cached = self.cache.load_query(cache_query) if self.cache and self.cache_mode in {"auto", "only"} else None
         if cached:
             rows, cached_at = cached
             age = datetime.now(timezone.utc) - datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
@@ -424,7 +432,7 @@ class CellarClient:
                 rows.append(parsed_row)
         except (ValueError, KeyError, TypeError) as exc:
             raise EurlexError("parse_error", "Invalid SPARQL response") from exc
-        cached_at = self.cache.store_query(query, rows) if self.cache and self.cache_mode != "off" else None
+        cached_at = self.cache.store_query(cache_query, rows) if self.cache and self.cache_mode != "off" else None
         self.last_query_cache = {"hit": False, "cached_at": cached_at, "freshness": "fresh"}
         return rows
 
@@ -451,11 +459,10 @@ class CellarClient:
         validate_celex(celex)
         query = f"""PREFIX cdm: <{CDM}>
 SELECT DISTINCT ?work ?document_date WHERE {{
-  ?work cdm:resource_legal_id_celex ?id .
-  FILTER(STR(?id) = \"{celex}\")
+  ?work cdm:resource_legal_id_celex "{celex}"^^<{XSD_STRING}> .
   OPTIONAL {{ ?work cdm:work_date_document ?document_date . }}
 }} ORDER BY STR(?work) STR(?document_date) LIMIT 101"""
-        rows = self._query(query)
+        rows = self._query_celex(query, celex)
         if not rows:
             raise EurlexError("not_found", "No CELLAR work found", {"identifier": celex}, 3)
         try:
@@ -483,15 +490,14 @@ SELECT DISTINCT ?work ?document_date WHERE {{
         authority = LANGUAGES[language]
         query = f"""PREFIX cdm: <{CDM}>
 SELECT DISTINCT ?work ?expression ?manifestation ?type ?item WHERE {{
-  ?work cdm:resource_legal_id_celex ?id .
-  FILTER(STR(?id) = \"{celex}\")
+  ?work cdm:resource_legal_id_celex "{celex}"^^<{XSD_STRING}> .
   ?expression cdm:expression_belongs_to_work ?work ;
               cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/{authority}> .
   ?manifestation cdm:manifestation_manifests_expression ?expression ;
                  cdm:manifestation_type ?type .
   ?item cdm:item_belongs_to_manifestation ?manifestation .
 }} ORDER BY STR(?manifestation) STR(?item) LIMIT 101"""
-        rows = self._query(query)
+        rows = self._query_celex(query, celex)
         if len(rows) > 100:
             raise EurlexError("parse_error", "Representation query exceeded safety limit")
         if not rows:
