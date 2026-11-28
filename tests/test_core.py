@@ -30,7 +30,8 @@ def sparql(*rows):
 def transport(request: httpx.Request) -> httpx.Response:
     if request.url.path.endswith("/sparql"):
         query = request.url.params["query"]
-        assert 'FILTER(STR(?id) = "32016R0679")' in query
+        assert 'cdm:resource_legal_id_celex "32016R0679"^^<http://www.w3.org/2001/XMLSchema#string>' in query
+        assert "FILTER(STR(?id)" not in query
         if "manifestation_manifests_expression" in query:
             return httpx.Response(200, json=sparql(
                 {"work": WORK, "expression": EXPR, "manifestation": MAN_PDF,

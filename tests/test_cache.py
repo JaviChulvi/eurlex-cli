@@ -174,3 +174,25 @@ def test_composed_offline_metadata_remains_not_checked(tmp_path):
     result = CellarClient(cache=cache, cache_mode="only").formats("32016R0679", "en")
     assert result["cache"]["hit"] is True
     assert result["cache"]["freshness"] == "not_checked"
+
+
+def test_typed_lookup_reads_metadata_cached_by_previous_query(tmp_path):
+    cache = ArtifactCache(tmp_path / "cache")
+    legacy_query = """PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+SELECT DISTINCT ?work ?document_date WHERE {
+  ?work cdm:resource_legal_id_celex ?id .
+  FILTER(STR(?id) = "32016R0679")
+  OPTIONAL { ?work cdm:work_date_document ?document_date . }
+} ORDER BY STR(?work) STR(?document_date) LIMIT 101"""
+    cache.store_query(legacy_query, [{"work": WORK, "document_date": "2016-04-27"}])
+
+    def network_forbidden(request):
+        pytest.fail("Offline lookup attempted a network request")
+
+    with httpx.Client(transport=httpx.MockTransport(network_forbidden)) as http:
+        result = CellarClient(http=http, cache=cache, cache_mode="only").get("32016R0679")
+
+    assert result["work"] == WORK
+    assert result["source_dates"] == {"document_date": "2016-04-27"}
+    assert result["cache"]["hit"] is True
+    assert result["cache"]["freshness"] == "not_checked"
